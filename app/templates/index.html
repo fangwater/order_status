@@ -1,0 +1,131 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Order Status</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="hero">
+        <div>
+          <div class="hero__title">Order Status</div>
+          <div class="hero__subtitle">Unified + UM futures open orders, with bulk cancel</div>
+        </div>
+        <div class="hero__meta">
+          <div class="tag">Local UI</div>
+          <div class="tag">Encrypted Keys</div>
+          <button class="btn btn--ghost" id="logoutBtn" type="button">Logout</button>
+        </div>
+      </header>
+
+      <section class="panel" id="credPanel">
+        <div class="panel__header">
+          <div class="panel__title">Credentials</div>
+          <div class="panel__hint" id="credHint">Login with master key before saving.</div>
+        </div>
+        <div class="panel__body">
+          <div class="cred__status" id="credStatus">No credentials loaded.</div>
+          <form id="credForm" class="form">
+            <div class="field">
+              <label for="exchange">Exchange</label>
+              <select id="exchange" name="exchange">
+                <option value="binance">Binance</option>
+                <option value="okex" disabled>OKX (soon)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="label">Label</label>
+              <input id="label" name="label" placeholder="main" required />
+            </div>
+            <div class="field">
+              <label for="apiKey">API Key</label>
+              <input id="apiKey" name="apiKey" placeholder="paste key" required />
+            </div>
+            <div class="field">
+              <label for="apiSecret">API Secret</label>
+              <input id="apiSecret" name="apiSecret" placeholder="paste secret" required />
+            </div>
+            <button class="btn btn--primary" type="submit">Save Credentials</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="panel" id="securityPanel">
+        <div class="panel__header">
+          <div class="panel__title">Security</div>
+          <div class="panel__hint" id="twofaHint">Two-factor status unknown.</div>
+        </div>
+        <div class="panel__body">
+          <div class="security__row">
+            <div class="security__status" id="twofaStatus">Loading...</div>
+            <button class="btn btn--ghost" id="setup2faBtn" type="button">Setup 2FA</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="queryPanel">
+        <div class="panel__header">
+          <div class="panel__title">Query</div>
+          <div class="panel__hint">Pick sources and refresh open orders.</div>
+        </div>
+        <div class="panel__body">
+          <div class="query__options">
+            <div class="field">
+              <label for="queryExchange">Exchange</label>
+              <select id="queryExchange">
+                <option value="binance">Binance</option>
+                <option value="okex" disabled>OKX (not ready)</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="accountSelect">Account</label>
+              <select id="accountSelect"></select>
+            </div>
+            <div class="checks">
+              <label class="check">
+                <input type="checkbox" id="optPapiUm" checked />
+                <span>Unified UM (PAPI)</span>
+              </label>
+              <label class="check">
+                <input type="checkbox" id="optPapiSpot" checked />
+                <span>Unified Spot (PAPI)</span>
+              </label>
+              <label class="check">
+                <input type="checkbox" id="optFapiUm" checked />
+                <span>UM Futures (FAPI)</span>
+              </label>
+            </div>
+            <button class="btn btn--ghost" id="refreshBtn">Refresh</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel" id="ordersPanel">
+        <div class="panel__header">
+          <div class="panel__title">Open Orders</div>
+          <div class="panel__hint" id="ordersHint">No data yet.</div>
+        </div>
+        <div class="panel__body">
+          <div class="toolbar">
+            <label class="check">
+              <input type="checkbox" id="selectAll" />
+              <span>Select all</span>
+            </label>
+            <div class="toolbar__actions">
+              <button class="btn btn--danger" id="cancelSelectedBtn">Cancel selected</button>
+              <button class="btn btn--ghost" id="refreshBtn2">Refresh</button>
+            </div>
+            <div class="toolbar__meta" id="selectionMeta">0 selected</div>
+          </div>
+          <div class="orders" id="ordersGrid"></div>
+        </div>
+      </section>
+
+      <div class="toast" id="toast"></div>
+    </div>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

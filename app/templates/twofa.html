@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>2FA Setup</title>
+    <link rel="stylesheet" href="/static/app.css" />
+  </head>
+  <body>
+    <div class="app">
+      <section class="panel">
+        <div class="panel__header">
+          <div class="panel__title">Two-Factor Setup</div>
+          <div class="panel__hint" id="statusHint">Loading...</div>
+        </div>
+        <div class="panel__body">
+          <div class="twofa__row">
+            <div class="twofa__qr">
+              <img id="qrImage" alt="QR code" />
+            </div>
+            <div class="twofa__details">
+              <div>Secret: <code id="secretText">-</code></div>
+              <a id="otpauthLink" href="#" target="_blank" rel="noreferrer">Open in Authenticator</a>
+              <button class="btn btn--ghost" id="startBtn" type="button">Generate QR</button>
+            </div>
+          </div>
+
+          <form id="confirmForm" class="form">
+            <div class="field">
+              <label for="totpCode">TOTP Code</label>
+              <input id="totpCode" type="text" inputmode="numeric" placeholder="123456" required />
+            </div>
+            <button class="btn btn--primary" type="submit">Confirm</button>
+          </form>
+          <div class="login__hint" id="confirmHint"></div>
+          <button class="btn btn--ghost" id="backBtn" type="button">Back</button>
+        </div>
+      </section>
+      <div class="toast" id="toast"></div>
+    </div>
+
+    <script>
+      const toast = document.getElementById("toast");
+      const statusHint = document.getElementById("statusHint");
+      const qrImage = document.getElementById("qrImage");
+      const secretText = document.getElementById("secretText");
+      const otpauthLink = document.getElementById("otpauthLink");
+      const startBtn = document.getElementById("startBtn");
+      const confirmForm = document.getElementById("confirmForm");
+      const confirmHint = document.getElementById("confirmHint");
+      const backBtn = document.getElementById("backBtn");
+
+      function showToast(message) {
+        toast.textContent = message;
+        toast.classList.add("toast--show");
+        setTimeout(() => toast.classList.remove("toast--show"), 2200);
+      }
+
+      async function fetchStatus() {
+        const resp = await fetch("/api/2fa/status");
+        if (!resp.ok) {
+          statusHint.textContent = "Failed to load 2FA status.";
+          return;
+        }
+        const data = await resp.json();
+        if (data.enabled) {
+          statusHint.textContent = "2FA is enabled. Generating a new secret will reset it.";
+          startBtn.textContent = "Reset 2FA";
+        } else {
+          statusHint.textContent = "2FA is not enabled yet.";
+          startBtn.textContent = "Generate QR";
+        }
+      }
+
+      async function startSetup() {
+        const resp = await fetch("/api/2fa/setup/start", { method: "POST" });
+        if (resp.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        if (!resp.ok) {
+          const text = await resp.text();
+          showToast(text || "Failed to generate QR");
+          return;
+        }
+        const data = await resp.json();
+        qrImage.src = data.qr_data_url;
+        secretText.textContent = data.secret;
+        otpauthLink.href = data.otpauth_url;
+      }
+
+      confirmForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        confirmHint.textContent = "";
+        const code = document.getElementById("totpCode").value.trim();
+        if (!code) {
+          showToast("Code required");
+          return;
+        }
+        const resp = await fetch("/api/2fa/setup/confirm", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ code }),
+        });
+        if (resp.status === 401) {
+          window.location.href = "/login";
+          return;
+        }
+        if (!resp.ok) {
+          const text = await resp.text();
+          confirmHint.textContent = text || "Confirm failed";
+          showToast("Confirm failed");
+          return;
+        }
+        showToast("2FA enabled");
+        fetchStatus();
+      });
+
+      startBtn.addEventListener("click", startSetup);
+      backBtn.addEventListener("click", () => {
+        window.location.href = "/";
+      });
+
+      fetchStatus();
+    </script>
+  </body>
+</html>
