@@ -32,6 +32,15 @@ class QueryRequest(BaseModel):
     binance: BinanceQueryOptions | None = None
 
 
+class OrderLookupRequest(BaseModel):
+    exchange: str
+    account: str = Field(..., min_length=1)
+    source: str = Field(..., min_length=1)
+    symbol: str = Field(..., min_length=1)
+    order_id: str | None = None
+    client_order_id: str | None = None
+
+
 class OrderItem(BaseModel):
     id: str
     exchange: str

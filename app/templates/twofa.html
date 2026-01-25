@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>2FA Setup</title>
-    <link rel="stylesheet" href="/static/app.css" />
+    <link rel="stylesheet" href="{{ base_path }}/static/app.css" />
   </head>
   <body>
     <div class="app">
@@ -40,6 +40,21 @@
     </div>
 
     <script>
+      window.APP_BASE_PATH = {{ base_path | tojson }};
+      const basePath = window.APP_BASE_PATH || "";
+      const withBase = (path) => {
+        if (!path) {
+          return basePath || "/";
+        }
+        const normalized = path.startsWith("/") ? path : `/${path}`;
+        if (!basePath) {
+          return normalized;
+        }
+        if (normalized === "/") {
+          return basePath;
+        }
+        return `${basePath}${normalized}`;
+      };
       const toast = document.getElementById("toast");
       const statusHint = document.getElementById("statusHint");
       const qrImage = document.getElementById("qrImage");
@@ -57,7 +72,7 @@
       }
 
       async function fetchStatus() {
-        const resp = await fetch("/api/2fa/status");
+        const resp = await fetch(withBase("/api/2fa/status"));
         if (!resp.ok) {
           statusHint.textContent = "Failed to load 2FA status.";
           return;
@@ -73,9 +88,9 @@
       }
 
       async function startSetup() {
-        const resp = await fetch("/api/2fa/setup/start", { method: "POST" });
+        const resp = await fetch(withBase("/api/2fa/setup/start"), { method: "POST" });
         if (resp.status === 401) {
-          window.location.href = "/login";
+          window.location.href = withBase("/login");
           return;
         }
         if (!resp.ok) {
@@ -97,13 +112,13 @@
           showToast("Code required");
           return;
         }
-        const resp = await fetch("/api/2fa/setup/confirm", {
+        const resp = await fetch(withBase("/api/2fa/setup/confirm"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ code }),
         });
         if (resp.status === 401) {
-          window.location.href = "/login";
+          window.location.href = withBase("/login");
           return;
         }
         if (!resp.ok) {
@@ -118,7 +133,7 @@
 
       startBtn.addEventListener("click", startSetup);
       backBtn.addEventListener("click", () => {
-        window.location.href = "/";
+        window.location.href = withBase("/");
       });
 
       fetchStatus();

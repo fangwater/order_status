@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+import logging
 import os
 import time
 import urllib.parse
@@ -13,19 +14,27 @@ import httpx
 BASE_PAPI_URL = os.environ.get("BINANCE_PAPI_URL", "https://papi.binance.com")
 BASE_FAPI_URL = os.environ.get("BINANCE_FAPI_URL", "https://fapi.binance.com")
 
+logger = logging.getLogger("order_status.binance")
+
 SOURCE_PAPI_UM = "papi_um"
 SOURCE_PAPI_SPOT = "papi_spot"
 SOURCE_FAPI_UM = "fapi_um"
 
 OPEN_ORDER_PATHS = {
     SOURCE_PAPI_UM: (BASE_PAPI_URL, "/papi/v1/um/openOrders"),
-    SOURCE_PAPI_SPOT: (BASE_PAPI_URL, "/papi/v1/spot/openOrders"),
+    SOURCE_PAPI_SPOT: (BASE_PAPI_URL, "/papi/v1/margin/openOrders"),
     SOURCE_FAPI_UM: (BASE_FAPI_URL, "/fapi/v1/openOrders"),
 }
 
 CANCEL_ORDER_PATHS = {
     SOURCE_PAPI_UM: (BASE_PAPI_URL, "/papi/v1/um/order"),
-    SOURCE_PAPI_SPOT: (BASE_PAPI_URL, "/papi/v1/spot/order"),
+    SOURCE_PAPI_SPOT: (BASE_PAPI_URL, "/papi/v1/margin/order"),
+    SOURCE_FAPI_UM: (BASE_FAPI_URL, "/fapi/v1/order"),
+}
+
+ORDER_QUERY_PATHS = {
+    SOURCE_PAPI_UM: (BASE_PAPI_URL, "/papi/v1/um/order"),
+    SOURCE_PAPI_SPOT: (BASE_PAPI_URL, "/papi/v1/margin/order"),
     SOURCE_FAPI_UM: (BASE_FAPI_URL, "/fapi/v1/order"),
 }
 
@@ -60,6 +69,24 @@ def request_signed(
     url = f"{base_url.rstrip('/')}{path}?{query}&signature={signature}"
     headers = {"X-MBX-APIKEY": api_key}
     resp = httpx.request(method, url, headers=headers, timeout=timeout)
+    logger.info(
+        "binance response method=%s path=%s status=%s body=%s",
+        method,
+        path,
+        resp.status_code,
+        resp.text,
+    )
+    if resp.status_code >= 400:
+        body_preview = resp.text
+        if len(body_preview) > 500:
+            body_preview = f"{body_preview[:500]}..."
+        logger.warning(
+            "binance request failed method=%s path=%s status=%s body=%s",
+            method,
+            path,
+            resp.status_code,
+            body_preview,
+        )
     return resp.status_code, resp.text, dict(resp.headers)
 
 
@@ -102,3 +129,40 @@ def cancel_order(
     base_url, path = CANCEL_ORDER_PATHS[source]
     params = {"symbol": symbol, "orderId": order_id}
     return request_signed("DELETE", base_url, path, params, api_key, api_secret)
+
+
+def fetch_order(
+    source: str,
+    symbol: str,
+    order_id: str | None,
+    client_order_id: str | None,
+    api_key: str,
+    api_secret: str,
+) -> Dict[str, Any]:
+    if source not in ORDER_QUERY_PATHS:
+        raise ValueError(f"unsupported source: {source}")
+    base_url, path = ORDER_QUERY_PATHS[source]
+    params: Dict[str, Any] = {"symbol": symbol}
+    if order_id:
+        params["orderId"] = order_id
+    elif client_order_id:
+        params["origClientOrderId"] = client_order_id
+    else:
+        raise ValueError("order_id or client_order_id required")
+    status, body, _headers = request_signed(
+        "GET",
+        base_url,
+        path,
+        params,
+        api_key,
+        api_secret,
+    )
+    if status != 200:
+        raise RuntimeError(f"request failed ({status}): {body}")
+    try:
+        payload = json.loads(body)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(f"invalid JSON: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RuntimeError(f"unexpected response: {body}")
+    return payload

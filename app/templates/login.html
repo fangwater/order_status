@@ -4,7 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Order Status Login</title>
-    <link rel="stylesheet" href="/static/app.css" />
+    <link rel="stylesheet" href="{{ base_path }}/static/app.css" />
   </head>
   <body>
     <div class="app">
@@ -32,6 +32,21 @@
     </div>
 
     <script>
+      window.APP_BASE_PATH = {{ base_path | tojson }};
+      const basePath = window.APP_BASE_PATH || "";
+      const withBase = (path) => {
+        if (!path) {
+          return basePath || "/";
+        }
+        const normalized = path.startsWith("/") ? path : `/${path}`;
+        if (!basePath) {
+          return normalized;
+        }
+        if (normalized === "/") {
+          return basePath;
+        }
+        return `${basePath}${normalized}`;
+      };
       const toast = document.getElementById("toast");
       const loginHint = document.getElementById("loginHint");
       const form = document.getElementById("loginForm");
@@ -51,7 +66,7 @@
           showToast("Master key required");
           return;
         }
-        const resp = await fetch("/api/login", {
+        const resp = await fetch(withBase("/api/login"), {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ master_key: masterKey, totp_code: totpCode || null }),
@@ -62,7 +77,7 @@
           showToast("Login failed");
           return;
         }
-        window.location.href = "/";
+        window.location.href = withBase("/");
       });
     </script>
   </body>

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import base64
 import io
+import json
+import logging
+import os
 import uuid
 from pathlib import Path
 
@@ -20,6 +23,7 @@ from .models import (
     CredentialIn,
     CredentialOut,
     LoginRequest,
+    OrderLookupRequest,
     OrderItem,
     TotpConfirmRequest,
     QueryRequest,
@@ -27,6 +31,20 @@ from .models import (
 )
 
 BASE_DIR = Path(__file__).resolve().parents[1]
+DEFAULT_BASE_PATH = os.getenv("APP_BASE_PATH", "/order_status").strip()
+
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL, logging.INFO),
+    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+)
+logger = logging.getLogger("order_status")
+LOG_ORDER_DETAILS = os.getenv("LOG_ORDER_DETAILS", "0") == "1"
+LOG_ORDER_JSON = os.getenv("LOG_ORDER_JSON", "1") == "1"
+try:
+    LOG_ORDER_LIMIT = max(0, int(os.getenv("LOG_ORDER_LIMIT", "20")))
+except ValueError:
+    LOG_ORDER_LIMIT = 20
 
 app = FastAPI(title="order_status")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
@@ -43,10 +61,36 @@ def startup() -> None:
     conn = db.get_conn()
     db.init_db(conn)
     conn.close()
+    logger.info("startup complete; base_path=%s", DEFAULT_BASE_PATH or "/")
 
 
 def session_id_from_request(request: Request) -> str:
     return request.cookies.get(SESSION_COOKIE, "")
+
+
+def base_path_from_request(request: Request) -> str:
+    forwarded = request.headers.get("x-forwarded-prefix", "").strip()
+    root_path = str(request.scope.get("root_path", "")).strip()
+    env_base = DEFAULT_BASE_PATH
+    value = forwarded or root_path or env_base
+    if not value:
+        return ""
+    if not value.startswith("/"):
+        value = f"/{value}"
+    if value != "/" and value.endswith("/"):
+        value = value.rstrip("/")
+    return "" if value == "/" else value
+
+
+def path_with_base(request: Request, path: str) -> str:
+    base_path = base_path_from_request(request)
+    if not path.startswith("/"):
+        path = f"/{path}"
+    if not base_path:
+        return path
+    if path == "/":
+        return base_path
+    return f"{base_path}{path}"
 
 
 def get_session(request: Request) -> dict:
@@ -157,23 +201,48 @@ def load_binance_credentials(conn, request: Request, label: str) -> tuple[str, s
 def index(request: Request) -> HTMLResponse:
     session_id = session_id_from_request(request)
     if not session_id or session_id not in SESSION_STORE:
-        return RedirectResponse(url="/login")
+        return RedirectResponse(url=path_with_base(request, "/login"))
     session = SESSION_STORE.get(session_id)
     conn = db.get_conn()
     enabled = db.get_meta(conn, TOTP_META_KEY) is not None
     conn.close()
     if not enabled:
-        return RedirectResponse(url="/2fa/setup")
+        return RedirectResponse(url=path_with_base(request, "/2fa/setup"))
     if not session or not session.get("totp_verified"):
-        return RedirectResponse(url="/login")
-    return templates.TemplateResponse("index.html", {"request": request})
+        return RedirectResponse(url=path_with_base(request, "/login"))
+    return templates.TemplateResponse(
+        "index.html",
+        {"request": request, "base_path": base_path_from_request(request)},
+    )
 
 
 @app.get("/login", response_class=HTMLResponse)
 def login_page(request: Request) -> HTMLResponse:
     if is_logged_in(request):
-        return RedirectResponse(url="/")
-    return templates.TemplateResponse("login.html", {"request": request})
+        return RedirectResponse(url=path_with_base(request, "/"))
+    return templates.TemplateResponse(
+        "login.html",
+        {"request": request, "base_path": base_path_from_request(request)},
+    )
+
+
+@app.get("/order_lookup", response_class=HTMLResponse)
+def order_lookup_page(request: Request) -> HTMLResponse:
+    session_id = session_id_from_request(request)
+    if not session_id or session_id not in SESSION_STORE:
+        return RedirectResponse(url=path_with_base(request, "/login"))
+    session = SESSION_STORE.get(session_id)
+    conn = db.get_conn()
+    enabled = db.get_meta(conn, TOTP_META_KEY) is not None
+    conn.close()
+    if not enabled:
+        return RedirectResponse(url=path_with_base(request, "/2fa/setup"))
+    if not session or not session.get("totp_verified"):
+        return RedirectResponse(url=path_with_base(request, "/login"))
+    return templates.TemplateResponse(
+        "order_lookup.html",
+        {"request": request, "base_path": base_path_from_request(request)},
+    )
 
 
 @app.get("/api/session")
@@ -249,8 +318,11 @@ def logout(request: Request, response: Response) -> dict:
 @app.get("/2fa/setup", response_class=HTMLResponse)
 def totp_setup_page(request: Request) -> HTMLResponse:
     if not is_logged_in(request):
-        return RedirectResponse(url="/login")
-    return templates.TemplateResponse("twofa.html", {"request": request})
+        return RedirectResponse(url=path_with_base(request, "/login"))
+    return templates.TemplateResponse(
+        "twofa.html",
+        {"request": request, "base_path": base_path_from_request(request)},
+    )
 
 
 @app.get("/api/2fa/status")
@@ -379,35 +451,87 @@ def query_orders(payload: QueryRequest, request: Request) -> QueryResponse:
     if not label:
         raise HTTPException(status_code=400, detail="Account is required")
 
+    logger.info(
+        "orders_query start exchange=%s account=%s client=%s",
+        exchange,
+        label,
+        request.client.host if request.client else "-",
+    )
+
     conn = db.get_conn()
     api_key, api_secret = load_binance_credentials(conn, request, label)
     conn.close()
 
     orders: list[OrderItem] = []
     errors: list[str] = []
+    source_counts: dict[str, int] = {}
 
     if payload.binance.papi_um:
         try:
             raw = binance.fetch_open_orders(binance.SOURCE_PAPI_UM, api_key, api_secret)
+            source_counts[binance.SOURCE_PAPI_UM] = len(raw)
             orders.extend(normalize_order(binance.SOURCE_PAPI_UM, item) for item in raw)
         except Exception as exc:
             errors.append(f"papi_um: {exc}")
+            source_counts[binance.SOURCE_PAPI_UM] = 0
+            logger.exception(
+                "orders_query failed source=%s account=%s",
+                binance.SOURCE_PAPI_UM,
+                label,
+            )
 
     if payload.binance.papi_spot:
         try:
             raw = binance.fetch_open_orders(binance.SOURCE_PAPI_SPOT, api_key, api_secret)
+            source_counts[binance.SOURCE_PAPI_SPOT] = len(raw)
             orders.extend(normalize_order(binance.SOURCE_PAPI_SPOT, item) for item in raw)
         except Exception as exc:
             errors.append(f"papi_spot: {exc}")
+            source_counts[binance.SOURCE_PAPI_SPOT] = 0
+            logger.exception(
+                "orders_query failed source=%s account=%s",
+                binance.SOURCE_PAPI_SPOT,
+                label,
+            )
 
     if payload.binance.fapi_um:
         try:
             raw = binance.fetch_open_orders(binance.SOURCE_FAPI_UM, api_key, api_secret)
+            source_counts[binance.SOURCE_FAPI_UM] = len(raw)
             orders.extend(normalize_order(binance.SOURCE_FAPI_UM, item) for item in raw)
         except Exception as exc:
             errors.append(f"fapi_um: {exc}")
+            source_counts[binance.SOURCE_FAPI_UM] = 0
+            logger.exception(
+                "orders_query failed source=%s account=%s",
+                binance.SOURCE_FAPI_UM,
+                label,
+            )
 
-    return QueryResponse(orders=orders, errors=errors)
+    response = QueryResponse(orders=orders, errors=errors)
+    logger.info(
+        "orders_query done account=%s orders=%s errors=%s sources=%s",
+        label,
+        len(orders),
+        len(errors),
+        source_counts,
+    )
+    if LOG_ORDER_JSON:
+        logger.info("orders_query response=%s", json.dumps(response.dict(), ensure_ascii=True))
+    if LOG_ORDER_DETAILS and orders:
+        detail_count = len(orders) if LOG_ORDER_LIMIT <= 0 else min(len(orders), LOG_ORDER_LIMIT)
+        sample = [
+            {
+                "source": order.source,
+                "symbol": order.symbol,
+                "side": order.side,
+                "status": order.status,
+                "order_id": order.order_id,
+            }
+            for order in orders[:detail_count]
+        ]
+        logger.info("orders_query sample count=%s items=%s", detail_count, sample)
+    return response
 
 
 @app.post("/api/orders/cancel", response_model=CancelResponse)
@@ -452,6 +576,14 @@ def cancel_orders(payload: CancelRequest, request: Request) -> CancelResponse:
                     message=body,
                 )
             )
+            if not ok:
+                logger.warning(
+                    "cancel failed source=%s symbol=%s order_id=%s status=%s",
+                    order.source,
+                    order.symbol,
+                    order.order_id,
+                    status,
+                )
         except Exception as exc:
             results.append(
                 CancelResult(
@@ -461,5 +593,80 @@ def cancel_orders(payload: CancelRequest, request: Request) -> CancelResponse:
                     message=str(exc),
                 )
             )
+            logger.exception(
+                "cancel failed source=%s symbol=%s order_id=%s",
+                order.source,
+                order.symbol,
+                order.order_id,
+            )
 
     return CancelResponse(results=results)
+
+
+@app.post("/api/orders/lookup", response_model=QueryResponse)
+def lookup_order(payload: OrderLookupRequest, request: Request) -> QueryResponse:
+    exchange = payload.exchange.lower().strip()
+    if exchange != "binance":
+        raise HTTPException(status_code=400, detail="Only binance is supported for now")
+    label = normalize_label(payload.account)
+    if not label:
+        raise HTTPException(status_code=400, detail="Account is required")
+
+    source = payload.source.strip()
+    if source not in {binance.SOURCE_PAPI_UM, binance.SOURCE_PAPI_SPOT, binance.SOURCE_FAPI_UM}:
+        raise HTTPException(status_code=400, detail="Unsupported api source")
+
+    symbol = payload.symbol.strip().upper()
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Symbol is required")
+
+    order_id = payload.order_id.strip() if payload.order_id else ""
+    client_order_id = payload.client_order_id.strip() if payload.client_order_id else ""
+    if not order_id and not client_order_id:
+        raise HTTPException(status_code=400, detail="Order ID or Client Order ID required")
+
+    logger.info(
+        "order_lookup start exchange=%s account=%s source=%s symbol=%s client=%s",
+        exchange,
+        label,
+        source,
+        symbol,
+        request.client.host if request.client else "-",
+    )
+
+    conn = db.get_conn()
+    api_key, api_secret = load_binance_credentials(conn, request, label)
+    conn.close()
+
+    orders: list[OrderItem] = []
+    errors: list[str] = []
+    try:
+        raw = binance.fetch_order(
+            source,
+            symbol,
+            order_id or None,
+            client_order_id or None,
+            api_key,
+            api_secret,
+        )
+        orders.append(normalize_order(source, raw))
+    except Exception as exc:
+        errors.append(f"{source}: {exc}")
+        logger.exception(
+            "order_lookup failed source=%s symbol=%s account=%s",
+            source,
+            symbol,
+            label,
+        )
+
+    response = QueryResponse(orders=orders, errors=errors)
+    if LOG_ORDER_JSON:
+        logger.info("order_lookup response=%s", json.dumps(response.dict(), ensure_ascii=True))
+    logger.info(
+        "order_lookup done account=%s source=%s orders=%s errors=%s",
+        label,
+        source,
+        len(orders),
+        len(errors),
+    )
+    return response

@@ -5,6 +5,21 @@ const state = {
   lastQuery: null,
 };
 
+const basePath = window.APP_BASE_PATH || "";
+function withBase(path) {
+  if (!path) {
+    return basePath || "/";
+  }
+  const normalized = path.startsWith("/") ? path : `/${path}`;
+  if (!basePath) {
+    return normalized;
+  }
+  if (normalized === "/") {
+    return basePath;
+  }
+  return `${basePath}${normalized}`;
+}
+
 const credStatus = document.getElementById("credStatus");
 const credForm = document.getElementById("credForm");
 const ordersGrid = document.getElementById("ordersGrid");
@@ -48,23 +63,23 @@ function sourceLabel(source) {
 }
 
 async function ensureLoggedIn() {
-  const resp = await fetch("/api/session");
+  const resp = await fetch(withBase("/api/session"));
   if (!resp.ok) {
-    window.location.href = "/login";
+    window.location.href = withBase("/login");
     return false;
   }
   const data = await resp.json();
   if (!data.logged_in) {
-    window.location.href = "/login";
+    window.location.href = withBase("/login");
     return false;
   }
   return true;
 }
 
 async function fetchCredentials() {
-  const resp = await fetch("/api/credentials");
+  const resp = await fetch(withBase("/api/credentials"));
   if (resp.status === 401) {
-    window.location.href = "/login";
+    window.location.href = withBase("/login");
     return;
   }
   if (!resp.ok) {
@@ -107,7 +122,7 @@ async function fetchTwofaStatus() {
   if (!twofaStatus) {
     return;
   }
-  const resp = await fetch("/api/2fa/status");
+  const resp = await fetch(withBase("/api/2fa/status"));
   if (!resp.ok) {
     twofaStatus.textContent = "Unable to load 2FA status.";
     return;
@@ -242,14 +257,14 @@ async function queryOrders() {
   state.lastQuery = payload;
   ordersHint.textContent = "Loading...";
 
-  const resp = await fetch("/api/orders/query", {
+  const resp = await fetch(withBase("/api/orders/query"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
 
   if (resp.status === 401) {
-    window.location.href = "/login";
+    window.location.href = withBase("/login");
     return;
   }
   if (!resp.ok) {
@@ -297,14 +312,14 @@ async function cancelOrders(orderList) {
     }
   });
 
-  const resp = await fetch("/api/orders/cancel", {
+  const resp = await fetch(withBase("/api/orders/cancel"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   });
 
   if (resp.status === 401) {
-    window.location.href = "/login";
+    window.location.href = withBase("/login");
     return;
   }
   if (!resp.ok) {
@@ -367,13 +382,13 @@ refreshBtn.addEventListener("click", queryOrders);
 refreshBtn2.addEventListener("click", queryOrders);
 if (logoutBtn) {
   logoutBtn.addEventListener("click", async () => {
-    await fetch("/api/logout", { method: "POST" });
-    window.location.href = "/login";
+    await fetch(withBase("/api/logout"), { method: "POST" });
+    window.location.href = withBase("/login");
   });
 }
 if (setup2faBtn) {
   setup2faBtn.addEventListener("click", () => {
-    window.location.href = "/2fa/setup";
+    window.location.href = withBase("/2fa/setup");
   });
 }
 
@@ -395,7 +410,7 @@ credForm.addEventListener("submit", async (event) => {
     api_secret: document.getElementById("apiSecret").value,
   };
 
-  const resp = await fetch("/api/credentials", {
+  const resp = await fetch(withBase("/api/credentials"), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),

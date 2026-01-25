@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Order Lookup</title>
+    <link rel="stylesheet" href="{{ base_path }}/static/app.css" />
+  </head>
+  <body>
+    <div class="app">
+      <header class="hero">
+        <div>
+          <div class="hero__title">Order Lookup</div>
+          <div class="hero__subtitle">Query a specific order by ID</div>
+        </div>
+        <div class="hero__meta">
+          <a class="btn btn--ghost" href="{{ base_path }}/">Back to Query</a>
+          <button class="btn btn--ghost" id="logoutBtn" type="button">Logout</button>
+        </div>
+      </header>
+
+      <section class="panel" id="lookupPanel">
+        <div class="panel__header">
+          <div class="panel__title">Lookup</div>
+          <div class="panel__hint" id="lookupHint">Pick account and source, then search.</div>
+        </div>
+        <div class="panel__body">
+          <form id="lookupForm" class="form">
+            <div class="field">
+              <label for="exchange">Exchange</label>
+              <select id="exchange" name="exchange">
+                <option value="binance">Binance</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="accountSelect">Account</label>
+              <select id="accountSelect"></select>
+            </div>
+            <div class="field">
+              <label for="sourceSelect">API Source</label>
+              <select id="sourceSelect">
+                <option value="papi_um">PAPI UM</option>
+                <option value="papi_spot">PAPI Margin</option>
+                <option value="fapi_um">FAPI UM</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="symbol">Symbol</label>
+              <input id="symbol" name="symbol" placeholder="BTCUSDT" required />
+            </div>
+            <div class="field">
+              <label for="orderId">Order ID</label>
+              <input id="orderId" name="orderId" placeholder="optional" />
+            </div>
+            <div class="field">
+              <label for="clientOrderId">Client Order ID</label>
+              <input id="clientOrderId" name="clientOrderId" placeholder="optional" />
+            </div>
+            <button class="btn btn--primary" type="submit">Search</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="panel" id="resultPanel">
+        <div class="panel__header">
+          <div class="panel__title">Result</div>
+          <div class="panel__hint" id="resultHint">No query yet.</div>
+        </div>
+        <div class="panel__body">
+          <div class="orders" id="resultGrid"></div>
+        </div>
+      </section>
+
+      <div class="toast" id="toast"></div>
+    </div>
+
+    <script>
+      window.APP_BASE_PATH = {{ base_path | tojson }};
+    </script>
+    <script src="{{ base_path }}/static/lookup.js"></script>
+  </body>
+</html>
