@@ -36,7 +36,7 @@ from .models import (
 )
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_BASE_PATH = os.getenv("APP_BASE_PATH", "/account_manager").strip()
+DEFAULT_BASE_PATH = os.getenv("APP_BASE_PATH", "/").strip()
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(

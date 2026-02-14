@@ -10,7 +10,7 @@ APP_MODULE="${APP_MODULE:-app.main:app}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-6301}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
-APP_BASE_PATH="${APP_BASE_PATH:-/account_manager}"
+APP_BASE_PATH="${APP_BASE_PATH:-/}"
 VENV_PATH="${VENV_PATH:-}"
 PYTHON_BIN="${PYTHON_BIN:-/home/ubuntu/jupyter_env/bin/python}"
 

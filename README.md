@@ -65,6 +65,7 @@ python scripts/check_binance_account_mode.py
 
 - `ACCOUNT_MANAGER_DB_PATH`: SQLite 文件路径（优先）。
 - `ORDER_STATUS_DB_PATH`: 兼容旧变量名。
+- `APP_BASE_PATH`: 应用基础前缀，默认 `/`。若走反向代理子路径（如 `/account_manager`），设置为对应前缀并由代理转发到应用根路径。
 - `BINANCE_PAPI_URL`: 默认 `https://papi.binance.com`
 - `BINANCE_FAPI_URL`: 默认 `https://fapi.binance.com`
 - `BINANCE_SPOT_URL`: 默认 `https://api.binance.com`
