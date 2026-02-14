@@ -30,13 +30,13 @@ PY
 3) 启动服务：
 
 ```bash
-uvicorn app.main:app --reload --port 8088
+uvicorn app.main:app --reload --host 0.0.0.0 --port 6301
 ```
 
 4) 打开页面并登录：
 
 ```
-http://127.0.0.1:8088/
+http://127.0.0.1:6301/
 ```
 
 在登录页输入上一步生成的主密钥（仅保存于内存，会话结束需重新登录）。
