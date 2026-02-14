@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
-# Stop order_status pm2 process.
+# Stop account_manager pm2 process.
 
 set -euo pipefail
 
-APP_NAME="${APP_NAME:-order_status}"
+APP_NAME="${APP_NAME:-account_manager}"
 
 if ! command -v pm2 >/dev/null 2>&1; then
     echo "[ERROR] pm2 not found in PATH." >&2

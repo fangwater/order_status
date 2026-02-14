@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# Start order_status with pm2.
+# Start account_manager with pm2.
 
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-APP_NAME="${APP_NAME:-order_status}"
+APP_NAME="${APP_NAME:-account_manager}"
 APP_MODULE="${APP_MODULE:-app.main:app}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-6301}"
 LOG_LEVEL="${LOG_LEVEL:-INFO}"
-APP_BASE_PATH="${APP_BASE_PATH:-/order_status}"
+APP_BASE_PATH="${APP_BASE_PATH:-/account_manager}"
 VENV_PATH="${VENV_PATH:-}"
 PYTHON_BIN="${PYTHON_BIN:-/home/ubuntu/jupyter_env/bin/python}"
 

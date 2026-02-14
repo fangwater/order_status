@@ -7,6 +7,7 @@ import logging
 import os
 import uuid
 from pathlib import Path
+from typing import Any
 
 import pyotp
 import qrcode
@@ -15,30 +16,34 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from . import binance, crypto, db
+from . import binance, crypto, db, gate, okx
 from .models import (
+    BinanceAccountModeRequest,
+    BinanceQueryOptions,
     CancelRequest,
     CancelResponse,
     CancelResult,
     CredentialIn,
     CredentialOut,
+    GateQueryOptions,
     LoginRequest,
+    OkxQueryOptions,
     OrderLookupRequest,
     OrderItem,
-    TotpConfirmRequest,
     QueryRequest,
     QueryResponse,
+    TotpConfirmRequest,
 )
 
 BASE_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_BASE_PATH = os.getenv("APP_BASE_PATH", "/order_status").strip()
+DEFAULT_BASE_PATH = os.getenv("APP_BASE_PATH", "/account_manager").strip()
 
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL, logging.INFO),
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
-logger = logging.getLogger("order_status")
+logger = logging.getLogger("account_manager")
 LOG_ORDER_DETAILS = os.getenv("LOG_ORDER_DETAILS", "0") == "1"
 LOG_ORDER_JSON = os.getenv("LOG_ORDER_JSON", "1") == "1"
 try:
@@ -46,14 +51,28 @@ try:
 except ValueError:
     LOG_ORDER_LIMIT = 20
 
-app = FastAPI(title="order_status")
+app = FastAPI(title="account_manager")
 app.mount("/static", StaticFiles(directory=BASE_DIR / "app" / "static"), name="static")
 
 templates = Jinja2Templates(directory=BASE_DIR / "app" / "templates")
-SESSION_COOKIE = "order_status_session"
+SESSION_COOKIE = "account_manager_session"
 SESSION_STORE: dict[str, dict] = {}
 TOTP_META_KEY = "totp_secret_enc"
-TOTP_ISSUER = "order_status"
+TOTP_ISSUER = "account_manager"
+
+EXCHANGE_BINANCE = "binance"
+EXCHANGE_OKX = "okx"
+EXCHANGE_GATE = "gate"
+SUPPORTED_EXCHANGES = {EXCHANGE_BINANCE, EXCHANGE_OKX, EXCHANGE_GATE}
+
+BINANCE_SOURCES = {
+    binance.SOURCE_PAPI_UM,
+    binance.SOURCE_PAPI_SPOT,
+    binance.SOURCE_FAPI_UM,
+    binance.SOURCE_SPOT,
+}
+OKX_SOURCES = set(okx.SOURCE_TO_INST_TYPE.keys())
+GATE_SOURCES = {gate.SOURCE_SPOT, gate.SOURCE_FUTURES}
 
 
 @app.on_event("startup")
@@ -126,49 +145,136 @@ def mask_key(value: str) -> str:
     return f"{value[:4]}...{value[-4:]}"
 
 
-def normalize_order(source: str, raw: dict) -> OrderItem:
-    symbol = str(raw.get("symbol", "")).upper()
-    order_id = raw.get("orderId") or raw.get("orderID") or raw.get("order_id")
-    client_order_id = raw.get("clientOrderId") or raw.get("client_order_id")
+def normalize_label(raw: str) -> str:
+    return raw.strip()
+
+
+def normalize_exchange(raw: str) -> str:
+    value = raw.lower().strip()
+    if value == "okex":
+        return EXCHANGE_OKX
+    return value
+
+
+def to_ms(value: Any) -> int | None:
+    if value is None or value == "" or isinstance(value, bool):
+        return None
+    num: float
+    if isinstance(value, (int, float)):
+        num = float(value)
+    else:
+        try:
+            num = float(str(value).strip())
+        except Exception:
+            return None
+    if num > 1_000_000_000_000:
+        return int(num)
+    if num > 1_000_000_000:
+        return int(num * 1000)
+    return int(num)
+
+
+def to_bool(value: Any) -> bool | None:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "1", "yes", "y"}:
+            return True
+        if lowered in {"false", "0", "no", "n"}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return None
+
+
+def normalize_order(exchange: str, source: str, raw: dict[str, Any]) -> OrderItem:
+    exchange = normalize_exchange(exchange)
+
+    if exchange == EXCHANGE_BINANCE:
+        symbol = str(raw.get("symbol", "")).upper()
+        order_id = raw.get("orderId") or raw.get("orderID") or raw.get("order_id")
+        client_order_id = raw.get("clientOrderId") or raw.get("client_order_id")
+        order_type = raw.get("type")
+        side = raw.get("side")
+        status = raw.get("status")
+        price = raw.get("price")
+        orig_qty = raw.get("origQty") or raw.get("origQuantity")
+        executed_qty = raw.get("executedQty")
+        time_value = raw.get("time")
+        update_time = raw.get("updateTime")
+        position_side = raw.get("positionSide")
+        reduce_only = raw.get("reduceOnly")
+    elif exchange == EXCHANGE_OKX:
+        symbol = str(raw.get("instId", "")).upper()
+        order_id = raw.get("ordId") or raw.get("orderId")
+        client_order_id = raw.get("clOrdId") or raw.get("clientOrderId")
+        order_type = raw.get("ordType") or raw.get("type")
+        side = raw.get("side")
+        status = raw.get("state") or raw.get("status")
+        price = raw.get("px") or raw.get("price")
+        orig_qty = raw.get("sz") or raw.get("size")
+        executed_qty = raw.get("accFillSz") or raw.get("filledSz") or raw.get("fillSz")
+        time_value = raw.get("cTime") or raw.get("createTime")
+        update_time = raw.get("uTime") or raw.get("updateTime")
+        position_side = raw.get("posSide") or raw.get("positionSide")
+        reduce_only = raw.get("reduceOnly")
+    elif exchange == EXCHANGE_GATE:
+        symbol = str(raw.get("currency_pair") or raw.get("contract") or raw.get("symbol") or "").upper()
+        order_id = raw.get("id") or raw.get("order_id") or raw.get("orderId")
+        client_order_id = raw.get("text") or raw.get("client_oid") or raw.get("clientOrderId")
+        order_type = raw.get("type")
+        side = raw.get("side")
+        status = raw.get("status")
+        price = raw.get("price")
+        orig_qty = raw.get("amount") if raw.get("amount") is not None else raw.get("size")
+        executed_qty = raw.get("filled_amount")
+        if executed_qty is None and raw.get("left") is not None and raw.get("size") is not None:
+            try:
+                executed_qty = str(abs(float(raw.get("size"))) - abs(float(raw.get("left"))))
+            except Exception:
+                executed_qty = None
+        time_value = (
+            raw.get("create_time_ms")
+            if raw.get("create_time_ms") is not None
+            else raw.get("create_time")
+        )
+        update_time = (
+            raw.get("update_time_ms")
+            if raw.get("update_time_ms") is not None
+            else raw.get("update_time")
+        )
+        if update_time is None:
+            update_time = raw.get("finish_time")
+        position_side = raw.get("position_side")
+        reduce_only = raw.get("reduce_only")
+    else:
+        raise ValueError(f"unsupported exchange: {exchange}")
+
     order_id_str = str(order_id) if order_id is not None else None
     client_order_id_str = str(client_order_id) if client_order_id is not None else None
 
-    order_type = raw.get("type")
-    side = raw.get("side")
-    status = raw.get("status")
-    price = raw.get("price")
-    orig_qty = raw.get("origQty") or raw.get("origQuantity")
-    executed_qty = raw.get("executedQty")
-    time_value = raw.get("time")
-    update_time = raw.get("updateTime")
-    position_side = raw.get("positionSide")
-    reduce_only = raw.get("reduceOnly")
-
     order_key = order_id_str or client_order_id_str or uuid.uuid4().hex
-    order_item_id = f"{source}:{symbol}:{order_key}"
+    order_item_id = f"{exchange}:{source}:{symbol}:{order_key}"
 
     return OrderItem(
         id=order_item_id,
-        exchange="binance",
+        exchange=exchange,
         source=source,
         symbol=symbol,
-        side=side,
-        order_type=order_type,
-        status=status,
+        side=str(side) if side is not None else None,
+        order_type=str(order_type) if order_type is not None else None,
+        status=str(status) if status is not None else None,
         price=str(price) if price is not None else None,
         orig_qty=str(orig_qty) if orig_qty is not None else None,
         executed_qty=str(executed_qty) if executed_qty is not None else None,
-        time=int(time_value) if isinstance(time_value, (int, float)) else None,
-        update_time=int(update_time) if isinstance(update_time, (int, float)) else None,
+        time=to_ms(time_value),
+        update_time=to_ms(update_time),
         order_id=order_id_str,
         client_order_id=client_order_id_str,
-        position_side=position_side,
-        reduce_only=reduce_only if isinstance(reduce_only, bool) else None,
+        position_side=str(position_side) if position_side is not None else None,
+        reduce_only=to_bool(reduce_only),
     )
-
-
-def normalize_label(raw: str) -> str:
-    return raw.strip()
 
 
 def get_totp_secret(conn, fernet: crypto.Fernet) -> str | None:
@@ -181,20 +287,61 @@ def get_totp_secret(conn, fernet: crypto.Fernet) -> str | None:
         raise HTTPException(status_code=400, detail="Failed to decrypt TOTP secret") from exc
 
 
-def load_binance_credentials(conn, request: Request, label: str) -> tuple[str, str]:
-    row = db.get_credentials(conn, "binance", label)
+def load_exchange_credentials(
+    conn,
+    request: Request,
+    exchange: str,
+    label: str,
+) -> tuple[str, str, str | None]:
+    row = db.get_credentials(conn, exchange, label)
+    if row is None and exchange == EXCHANGE_OKX:
+        row = db.get_credentials(conn, "okex", label)
     if not row:
         raise HTTPException(
             status_code=400,
-            detail=f"Binance credentials not set for account '{label}'",
+            detail=f"{exchange.upper()} credentials not set for account '{label}'",
         )
     fernet = get_fernet_from_request(request)
     try:
         api_key = fernet.decrypt(row["api_key_enc"].encode("utf-8")).decode("utf-8")
         api_secret = fernet.decrypt(row["api_secret_enc"].encode("utf-8")).decode("utf-8")
+        passphrase_enc = row["api_passphrase_enc"]
+        api_passphrase = (
+            fernet.decrypt(passphrase_enc.encode("utf-8")).decode("utf-8")
+            if passphrase_enc
+            else None
+        )
     except Exception as exc:
         raise HTTPException(status_code=400, detail="Failed to decrypt credentials") from exc
-    return api_key, api_secret
+    return api_key, api_secret, api_passphrase
+
+
+def validate_exchange_or_400(exchange: str) -> None:
+    if exchange not in SUPPORTED_EXCHANGES:
+        raise HTTPException(status_code=400, detail=f"Unsupported exchange: {exchange}")
+
+
+def is_okx_cancel_success(status: int, body: str) -> bool:
+    if not (200 <= status < 300):
+        return False
+    try:
+        parsed = json.loads(body)
+    except json.JSONDecodeError:
+        return False
+    if not isinstance(parsed, dict):
+        return False
+    code = str(parsed.get("code", "")).strip()
+    if code not in {"", "0"}:
+        return False
+    data = parsed.get("data")
+    if isinstance(data, list):
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            s_code = str(item.get("sCode", "")).strip()
+            if s_code not in {"", "0"}:
+                return False
+    return True
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -400,9 +547,10 @@ def list_credentials(request: Request) -> list[CredentialOut]:
             masked = "encrypted"
         results.append(
             CredentialOut(
-                exchange=row["exchange"],
+                exchange=normalize_exchange(row["exchange"]),
                 label=row["label"],
                 api_key_masked=masked,
+                has_passphrase=bool(row["api_passphrase_enc"]),
                 created_at=row["created_at"],
                 updated_at=row["updated_at"],
             )
@@ -413,20 +561,26 @@ def list_credentials(request: Request) -> list[CredentialOut]:
 
 @app.post("/api/credentials", response_model=CredentialOut)
 def upsert_credentials(payload: CredentialIn, request: Request) -> CredentialOut:
-    exchange = payload.exchange.lower().strip()
-    if exchange != "binance":
-        raise HTTPException(status_code=400, detail="Only binance is supported for now")
+    exchange = normalize_exchange(payload.exchange)
+    validate_exchange_or_400(exchange)
 
     label = normalize_label(payload.label)
     if not label:
         raise HTTPException(status_code=400, detail="Label is required")
 
+    if exchange == EXCHANGE_OKX and not (payload.api_passphrase or "").strip():
+        raise HTTPException(status_code=400, detail="OKX requires api_passphrase")
+
     conn = db.get_conn()
     fernet = get_fernet_from_request(request)
     api_key_enc = fernet.encrypt(payload.api_key.encode("utf-8")).decode("utf-8")
     api_secret_enc = fernet.encrypt(payload.api_secret.encode("utf-8")).decode("utf-8")
+    passphrase_raw = (payload.api_passphrase or "").strip()
+    api_passphrase_enc = (
+        fernet.encrypt(passphrase_raw.encode("utf-8")).decode("utf-8") if passphrase_raw else None
+    )
 
-    db.upsert_credentials(conn, exchange, label, api_key_enc, api_secret_enc)
+    db.upsert_credentials(conn, exchange, label, api_key_enc, api_secret_enc, api_passphrase_enc)
     row = db.get_credentials(conn, exchange, label)
     conn.close()
     if not row:
@@ -435,18 +589,41 @@ def upsert_credentials(payload: CredentialIn, request: Request) -> CredentialOut
         exchange=row["exchange"],
         label=row["label"],
         api_key_masked=mask_key(payload.api_key),
+        has_passphrase=bool(row["api_passphrase_enc"]),
         created_at=row["created_at"],
         updated_at=row["updated_at"],
     )
 
 
+@app.post("/api/binance/account_mode")
+def detect_binance_account_mode(payload: BinanceAccountModeRequest, request: Request) -> dict:
+    label = normalize_label(payload.account)
+    if not label:
+        raise HTTPException(status_code=400, detail="Account is required")
+
+    conn = db.get_conn()
+    api_key, api_secret, _ = load_exchange_credentials(conn, request, EXCHANGE_BINANCE, label)
+    conn.close()
+
+    try:
+        result = binance.detect_account_mode(api_key, api_secret)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+    return {
+        "account": label,
+        "mode": result.get("mode"),
+        "via": result.get("via"),
+        "papi_status": result.get("papi_status"),
+        "fapi_status": result.get("fapi_status"),
+    }
+
+
 @app.post("/api/orders/query", response_model=QueryResponse)
 def query_orders(payload: QueryRequest, request: Request) -> QueryResponse:
-    exchange = payload.exchange.lower().strip()
-    if exchange != "binance":
-        raise HTTPException(status_code=400, detail="Only binance is supported for now")
-    if payload.binance is None:
-        raise HTTPException(status_code=400, detail="Missing binance options")
+    exchange = normalize_exchange(payload.exchange)
+    validate_exchange_or_400(exchange)
+
     label = normalize_label(payload.account)
     if not label:
         raise HTTPException(status_code=400, detail="Account is required")
@@ -459,58 +636,115 @@ def query_orders(payload: QueryRequest, request: Request) -> QueryResponse:
     )
 
     conn = db.get_conn()
-    api_key, api_secret = load_binance_credentials(conn, request, label)
+    api_key, api_secret, api_passphrase = load_exchange_credentials(conn, request, exchange, label)
     conn.close()
 
     orders: list[OrderItem] = []
     errors: list[str] = []
     source_counts: dict[str, int] = {}
 
-    if payload.binance.papi_um:
-        try:
-            raw = binance.fetch_open_orders(binance.SOURCE_PAPI_UM, api_key, api_secret)
-            source_counts[binance.SOURCE_PAPI_UM] = len(raw)
-            orders.extend(normalize_order(binance.SOURCE_PAPI_UM, item) for item in raw)
-        except Exception as exc:
-            errors.append(f"papi_um: {exc}")
-            source_counts[binance.SOURCE_PAPI_UM] = 0
-            logger.exception(
-                "orders_query failed source=%s account=%s",
-                binance.SOURCE_PAPI_UM,
-                label,
-            )
+    if exchange == EXCHANGE_BINANCE:
+        options = payload.binance or BinanceQueryOptions()
+        requested_mode = options.account_mode.strip().upper() if options.account_mode else "AUTO"
+        selected_sources = []
+        if options.papi_um:
+            selected_sources.append(binance.SOURCE_PAPI_UM)
+        if options.papi_spot:
+            selected_sources.append(binance.SOURCE_PAPI_SPOT)
+        if options.fapi_um:
+            selected_sources.append(binance.SOURCE_FAPI_UM)
+        if options.spot:
+            selected_sources.append(binance.SOURCE_SPOT)
 
-    if payload.binance.papi_spot:
-        try:
-            raw = binance.fetch_open_orders(binance.SOURCE_PAPI_SPOT, api_key, api_secret)
-            source_counts[binance.SOURCE_PAPI_SPOT] = len(raw)
-            orders.extend(normalize_order(binance.SOURCE_PAPI_SPOT, item) for item in raw)
-        except Exception as exc:
-            errors.append(f"papi_spot: {exc}")
-            source_counts[binance.SOURCE_PAPI_SPOT] = 0
-            logger.exception(
-                "orders_query failed source=%s account=%s",
-                binance.SOURCE_PAPI_SPOT,
-                label,
-            )
+        if not selected_sources:
+            if requested_mode == binance.ACCOUNT_MODE_UNIFIED:
+                selected_sources = [
+                    binance.SOURCE_PAPI_UM,
+                    binance.SOURCE_PAPI_SPOT,
+                    binance.SOURCE_FAPI_UM,
+                ]
+            elif requested_mode == binance.ACCOUNT_MODE_STANDARD:
+                selected_sources = [binance.SOURCE_FAPI_UM, binance.SOURCE_SPOT]
+            else:
+                detected = binance.detect_account_mode(api_key, api_secret)
+                detected_mode = detected.get("mode")
+                if detected_mode == binance.ACCOUNT_MODE_UNIFIED:
+                    selected_sources = [
+                        binance.SOURCE_PAPI_UM,
+                        binance.SOURCE_PAPI_SPOT,
+                        binance.SOURCE_FAPI_UM,
+                    ]
+                else:
+                    selected_sources = [binance.SOURCE_FAPI_UM, binance.SOURCE_SPOT]
 
-    if payload.binance.fapi_um:
-        try:
-            raw = binance.fetch_open_orders(binance.SOURCE_FAPI_UM, api_key, api_secret)
-            source_counts[binance.SOURCE_FAPI_UM] = len(raw)
-            orders.extend(normalize_order(binance.SOURCE_FAPI_UM, item) for item in raw)
-        except Exception as exc:
-            errors.append(f"fapi_um: {exc}")
-            source_counts[binance.SOURCE_FAPI_UM] = 0
-            logger.exception(
-                "orders_query failed source=%s account=%s",
-                binance.SOURCE_FAPI_UM,
-                label,
-            )
+        for source in selected_sources:
+            try:
+                raw = binance.fetch_open_orders(source, api_key, api_secret)
+                source_counts[source] = len(raw)
+                orders.extend(normalize_order(exchange, source, item) for item in raw)
+            except Exception as exc:
+                errors.append(f"{source}: {exc}")
+                source_counts[source] = 0
+                logger.exception("orders_query failed source=%s account=%s", source, label)
+
+    elif exchange == EXCHANGE_OKX:
+        options = payload.okx or OkxQueryOptions()
+        selected_sources = []
+        if options.swap:
+            selected_sources.append(okx.SOURCE_SWAP)
+        if options.spot:
+            selected_sources.append(okx.SOURCE_SPOT)
+        if options.margin:
+            selected_sources.append(okx.SOURCE_MARGIN)
+        if not selected_sources:
+            selected_sources = [okx.SOURCE_SWAP]
+
+        if not api_passphrase:
+            raise HTTPException(status_code=400, detail="OKX api_passphrase is required")
+
+        for source in selected_sources:
+            try:
+                raw = okx.fetch_open_orders(source, api_key, api_secret, api_passphrase)
+                source_counts[source] = len(raw)
+                orders.extend(normalize_order(exchange, source, item) for item in raw)
+            except Exception as exc:
+                errors.append(f"{source}: {exc}")
+                source_counts[source] = 0
+                logger.exception("orders_query failed source=%s account=%s", source, label)
+
+    elif exchange == EXCHANGE_GATE:
+        options = payload.gate or GateQueryOptions()
+        selected_sources = []
+        if options.spot:
+            selected_sources.append(gate.SOURCE_SPOT)
+        if options.futures:
+            selected_sources.append(gate.SOURCE_FUTURES)
+        if not selected_sources:
+            selected_sources = [gate.SOURCE_SPOT, gate.SOURCE_FUTURES]
+
+        spot_account = (options.spot_account or gate.DEFAULT_SPOT_ACCOUNT).strip() or gate.DEFAULT_SPOT_ACCOUNT
+        settle = (options.settle or gate.DEFAULT_SETTLE).strip().lower() or gate.DEFAULT_SETTLE
+
+        for source in selected_sources:
+            try:
+                raw = gate.fetch_open_orders(
+                    source,
+                    api_key,
+                    api_secret,
+                    spot_account=spot_account,
+                    settle=settle,
+                )
+                source_counts[source] = len(raw)
+                orders.extend(normalize_order(exchange, source, item) for item in raw)
+            except Exception as exc:
+                errors.append(f"{source}: {exc}")
+                source_counts[source] = 0
+                logger.exception("orders_query failed source=%s account=%s", source, label)
 
     response = QueryResponse(orders=orders, errors=errors)
     logger.info(
-        "orders_query done account=%s orders=%s errors=%s sources=%s",
+        "orders_query done exchange=%s account=%s orders=%s errors=%s sources=%s",
+        exchange,
         label,
         len(orders),
         len(errors),
@@ -522,6 +756,7 @@ def query_orders(payload: QueryRequest, request: Request) -> QueryResponse:
         detail_count = len(orders) if LOG_ORDER_LIMIT <= 0 else min(len(orders), LOG_ORDER_LIMIT)
         sample = [
             {
+                "exchange": order.exchange,
                 "source": order.source,
                 "symbol": order.symbol,
                 "side": order.side,
@@ -536,49 +771,83 @@ def query_orders(payload: QueryRequest, request: Request) -> QueryResponse:
 
 @app.post("/api/orders/cancel", response_model=CancelResponse)
 def cancel_orders(payload: CancelRequest, request: Request) -> CancelResponse:
-    exchange = payload.exchange.lower().strip()
-    if exchange != "binance":
-        raise HTTPException(status_code=400, detail="Only binance is supported for now")
+    exchange = normalize_exchange(payload.exchange)
+    validate_exchange_or_400(exchange)
+
     label = normalize_label(payload.account)
     if not label:
         raise HTTPException(status_code=400, detail="Account is required")
 
     conn = db.get_conn()
-    api_key, api_secret = load_binance_credentials(conn, request, label)
+    api_key, api_secret, api_passphrase = load_exchange_credentials(conn, request, exchange, label)
     conn.close()
+
+    gate_opts = payload.gate or GateQueryOptions()
+    gate_spot_account = (gate_opts.spot_account or gate.DEFAULT_SPOT_ACCOUNT).strip() or gate.DEFAULT_SPOT_ACCOUNT
+    gate_settle = (gate_opts.settle or gate.DEFAULT_SETTLE).strip().lower() or gate.DEFAULT_SETTLE
 
     results: list[CancelResult] = []
     for order in payload.orders:
-        if not order.order_id or not order.symbol:
+        if not order.symbol:
             results.append(
                 CancelResult(
                     id=order.id,
                     ok=False,
                     status=0,
-                    message="missing symbol or order_id",
+                    message="missing symbol",
                 )
             )
             continue
+
         try:
-            status, body, _headers = binance.cancel_order(
-                order.source,
-                order.symbol,
-                order.order_id,
-                api_key,
-                api_secret,
-            )
-            ok = 200 <= status < 300
+            if exchange == EXCHANGE_BINANCE:
+                status, body, _headers = binance.cancel_order(
+                    order.source,
+                    order.symbol,
+                    order.order_id,
+                    order.client_order_id,
+                    api_key,
+                    api_secret,
+                )
+                ok_flag = 200 <= status < 300
+            elif exchange == EXCHANGE_OKX:
+                if not api_passphrase:
+                    raise RuntimeError("OKX api_passphrase is required")
+                status, body, _headers = okx.cancel_order(
+                    order.source,
+                    order.symbol,
+                    order.order_id,
+                    order.client_order_id,
+                    api_key,
+                    api_secret,
+                    api_passphrase,
+                )
+                ok_flag = is_okx_cancel_success(status, body)
+            else:
+                status, body, _headers = gate.cancel_order(
+                    order.source,
+                    order.symbol,
+                    order.order_id,
+                    order.client_order_id,
+                    api_key,
+                    api_secret,
+                    spot_account=gate_spot_account,
+                    settle=gate_settle,
+                )
+                ok_flag = 200 <= status < 300
+
             results.append(
                 CancelResult(
                     id=order.id,
-                    ok=ok,
+                    ok=ok_flag,
                     status=status,
                     message=body,
                 )
             )
-            if not ok:
+            if not ok_flag:
                 logger.warning(
-                    "cancel failed source=%s symbol=%s order_id=%s status=%s",
+                    "cancel failed exchange=%s source=%s symbol=%s order_id=%s status=%s",
+                    exchange,
                     order.source,
                     order.symbol,
                     order.order_id,
@@ -594,7 +863,8 @@ def cancel_orders(payload: CancelRequest, request: Request) -> CancelResponse:
                 )
             )
             logger.exception(
-                "cancel failed source=%s symbol=%s order_id=%s",
+                "cancel failed exchange=%s source=%s symbol=%s order_id=%s",
+                exchange,
                 order.source,
                 order.symbol,
                 order.order_id,
@@ -605,16 +875,20 @@ def cancel_orders(payload: CancelRequest, request: Request) -> CancelResponse:
 
 @app.post("/api/orders/lookup", response_model=QueryResponse)
 def lookup_order(payload: OrderLookupRequest, request: Request) -> QueryResponse:
-    exchange = payload.exchange.lower().strip()
-    if exchange != "binance":
-        raise HTTPException(status_code=400, detail="Only binance is supported for now")
+    exchange = normalize_exchange(payload.exchange)
+    validate_exchange_or_400(exchange)
+
     label = normalize_label(payload.account)
     if not label:
         raise HTTPException(status_code=400, detail="Account is required")
 
     source = payload.source.strip()
-    if source not in {binance.SOURCE_PAPI_UM, binance.SOURCE_PAPI_SPOT, binance.SOURCE_FAPI_UM}:
-        raise HTTPException(status_code=400, detail="Unsupported api source")
+    if exchange == EXCHANGE_BINANCE and source not in BINANCE_SOURCES:
+        raise HTTPException(status_code=400, detail="Unsupported binance source")
+    if exchange == EXCHANGE_OKX and source not in OKX_SOURCES:
+        raise HTTPException(status_code=400, detail="Unsupported okx source")
+    if exchange == EXCHANGE_GATE and source not in GATE_SOURCES:
+        raise HTTPException(status_code=400, detail="Unsupported gate source")
 
     symbol = payload.symbol.strip().upper()
     if not symbol:
@@ -622,8 +896,12 @@ def lookup_order(payload: OrderLookupRequest, request: Request) -> QueryResponse
 
     order_id = payload.order_id.strip() if payload.order_id else ""
     client_order_id = payload.client_order_id.strip() if payload.client_order_id else ""
-    if not order_id and not client_order_id:
-        raise HTTPException(status_code=400, detail="Order ID or Client Order ID required")
+    if exchange == EXCHANGE_GATE:
+        if not order_id:
+            raise HTTPException(status_code=400, detail="Gate lookup requires order_id")
+    else:
+        if not order_id and not client_order_id:
+            raise HTTPException(status_code=400, detail="Order ID or Client Order ID required")
 
     logger.info(
         "order_lookup start exchange=%s account=%s source=%s symbol=%s client=%s",
@@ -635,25 +913,53 @@ def lookup_order(payload: OrderLookupRequest, request: Request) -> QueryResponse
     )
 
     conn = db.get_conn()
-    api_key, api_secret = load_binance_credentials(conn, request, label)
+    api_key, api_secret, api_passphrase = load_exchange_credentials(conn, request, exchange, label)
     conn.close()
 
     orders: list[OrderItem] = []
     errors: list[str] = []
     try:
-        raw = binance.fetch_order(
-            source,
-            symbol,
-            order_id or None,
-            client_order_id or None,
-            api_key,
-            api_secret,
-        )
-        orders.append(normalize_order(source, raw))
+        if exchange == EXCHANGE_BINANCE:
+            raw = binance.fetch_order(
+                source,
+                symbol,
+                order_id or None,
+                client_order_id or None,
+                api_key,
+                api_secret,
+            )
+        elif exchange == EXCHANGE_OKX:
+            if not api_passphrase:
+                raise RuntimeError("OKX api_passphrase is required")
+            raw = okx.fetch_order(
+                source,
+                symbol,
+                order_id or None,
+                client_order_id or None,
+                api_key,
+                api_secret,
+                api_passphrase,
+            )
+        else:
+            gate_spot_account = (payload.gate_spot_account or gate.DEFAULT_SPOT_ACCOUNT).strip() or gate.DEFAULT_SPOT_ACCOUNT
+            gate_settle = (payload.gate_settle or gate.DEFAULT_SETTLE).strip().lower() or gate.DEFAULT_SETTLE
+            raw = gate.fetch_order(
+                source,
+                symbol,
+                order_id or None,
+                client_order_id or None,
+                api_key,
+                api_secret,
+                spot_account=gate_spot_account,
+                settle=gate_settle,
+            )
+
+        orders.append(normalize_order(exchange, source, raw))
     except Exception as exc:
         errors.append(f"{source}: {exc}")
         logger.exception(
-            "order_lookup failed source=%s symbol=%s account=%s",
+            "order_lookup failed exchange=%s source=%s symbol=%s account=%s",
+            exchange,
             source,
             symbol,
             label,
@@ -663,7 +969,8 @@ def lookup_order(payload: OrderLookupRequest, request: Request) -> QueryResponse
     if LOG_ORDER_JSON:
         logger.info("order_lookup response=%s", json.dumps(response.dict(), ensure_ascii=True))
     logger.info(
-        "order_lookup done account=%s source=%s orders=%s errors=%s",
+        "order_lookup done exchange=%s account=%s source=%s orders=%s errors=%s",
+        exchange,
         label,
         source,
         len(orders),

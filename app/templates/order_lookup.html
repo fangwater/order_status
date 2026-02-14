@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Order Lookup</title>
+    <title>Account Manager Lookup</title>
     <link rel="stylesheet" href="{{ base_path }}/static/app.css" />
   </head>
   <body>
@@ -22,7 +22,7 @@
       <section class="panel" id="lookupPanel">
         <div class="panel__header">
           <div class="panel__title">Lookup</div>
-          <div class="panel__hint" id="lookupHint">Pick account and source, then search.</div>
+          <div class="panel__hint" id="lookupHint">Pick exchange/account/source, then search.</div>
         </div>
         <div class="panel__body">
           <form id="lookupForm" class="form">
@@ -30,6 +30,8 @@
               <label for="exchange">Exchange</label>
               <select id="exchange" name="exchange">
                 <option value="binance">Binance</option>
+                <option value="okx">OKX</option>
+                <option value="gate">Gate</option>
               </select>
             </div>
             <div class="field">
@@ -38,19 +40,23 @@
             </div>
             <div class="field">
               <label for="sourceSelect">API Source</label>
-              <select id="sourceSelect">
-                <option value="papi_um">PAPI UM</option>
-                <option value="papi_spot">PAPI Margin</option>
-                <option value="fapi_um">FAPI UM</option>
-              </select>
+              <select id="sourceSelect"></select>
+            </div>
+            <div class="field" id="gateSpotAccountField" style="display: none">
+              <label for="gateSpotAccount">Gate Spot Account</label>
+              <input id="gateSpotAccount" value="unified" placeholder="unified" />
+            </div>
+            <div class="field" id="gateSettleField" style="display: none">
+              <label for="gateSettle">Gate Futures Settle</label>
+              <input id="gateSettle" value="usdt" placeholder="usdt" />
             </div>
             <div class="field">
               <label for="symbol">Symbol</label>
-              <input id="symbol" name="symbol" placeholder="BTCUSDT" required />
+              <input id="symbol" name="symbol" placeholder="BTCUSDT / BTC-USDT-SWAP / BTC_USDT" required />
             </div>
             <div class="field">
               <label for="orderId">Order ID</label>
-              <input id="orderId" name="orderId" placeholder="optional" />
+              <input id="orderId" name="orderId" placeholder="required for Gate" />
             </div>
             <div class="field">
               <label for="clientOrderId">Client Order ID</label>

@@ -3,15 +3,15 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Order Status</title>
+    <title>Account Manager</title>
     <link rel="stylesheet" href="{{ base_path }}/static/app.css" />
   </head>
   <body>
     <div class="app">
       <header class="hero">
         <div>
-          <div class="hero__title">Order Status</div>
-          <div class="hero__subtitle">Unified + UM futures open orders, with bulk cancel</div>
+          <div class="hero__title">Account Manager</div>
+          <div class="hero__subtitle">Binance / OKX / Gate open-order query, lookup, and bulk cancel</div>
         </div>
         <div class="hero__meta">
           <div class="tag">Local UI</div>
@@ -32,7 +32,8 @@
               <label for="exchange">Exchange</label>
               <select id="exchange" name="exchange">
                 <option value="binance">Binance</option>
-                <option value="okex" disabled>OKX (soon)</option>
+                <option value="okx">OKX</option>
+                <option value="gate">Gate</option>
               </select>
             </div>
             <div class="field">
@@ -46,6 +47,10 @@
             <div class="field">
               <label for="apiSecret">API Secret</label>
               <input id="apiSecret" name="apiSecret" placeholder="paste secret" required />
+            </div>
+            <div class="field">
+              <label for="apiPassphrase">API Passphrase (OKX only)</label>
+              <input id="apiPassphrase" name="apiPassphrase" placeholder="required for OKX" />
             </div>
             <button class="btn btn--primary" type="submit">Save Credentials</button>
           </form>
@@ -69,7 +74,7 @@
         <div class="panel__header">
           <div class="panel__title">Query</div>
           <a class="btn btn--ghost" href="{{ base_path }}/order_lookup">Order Lookup</a>
-          <div class="panel__hint">Pick sources and refresh open orders.</div>
+          <div class="panel__hint">Pick exchange/sources then refresh open orders.</div>
         </div>
         <div class="panel__body">
           <div class="query__options">
@@ -77,28 +82,87 @@
               <label for="queryExchange">Exchange</label>
               <select id="queryExchange">
                 <option value="binance">Binance</option>
-                <option value="okex" disabled>OKX (not ready)</option>
+                <option value="okx">OKX</option>
+                <option value="gate">Gate</option>
               </select>
             </div>
             <div class="field">
               <label for="accountSelect">Account</label>
               <select id="accountSelect"></select>
             </div>
-            <div class="checks">
-              <label class="check">
-                <input type="checkbox" id="optPapiUm" checked />
-                <span>Unified UM (PAPI)</span>
-              </label>
-              <label class="check">
-                <input type="checkbox" id="optPapiSpot" checked />
-                <span>Unified Spot (PAPI)</span>
-              </label>
-              <label class="check">
-                <input type="checkbox" id="optFapiUm" checked />
-                <span>UM Futures (FAPI)</span>
-              </label>
+
+            <div id="binanceOptions">
+              <div class="field">
+                <label for="binanceMode">Binance Mode</label>
+                <select id="binanceMode">
+                  <option value="AUTO">Auto</option>
+                  <option value="UNIFIED">Unified</option>
+                  <option value="STANDARD">Standard</option>
+                </select>
+              </div>
+              <div class="toolbar__actions" style="margin-bottom: 10px">
+                <button class="btn btn--ghost btn--small" id="detectBinanceModeBtn" type="button">Detect Mode</button>
+                <div class="toolbar__meta" id="binanceModeHint">Mode: unknown</div>
+              </div>
+              <div class="checks">
+                <label class="check">
+                  <input type="checkbox" id="optPapiUm" checked />
+                  <span>Unified UM (PAPI)</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="optPapiSpot" checked />
+                  <span>Unified Spot/Margin (PAPI)</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="optFapiUm" checked />
+                  <span>UM Futures (FAPI)</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="optSpot" />
+                  <span>Standard Spot (API v3)</span>
+                </label>
+              </div>
             </div>
-            <button class="btn btn--ghost" id="refreshBtn">Refresh</button>
+
+            <div id="okxOptions" style="display: none">
+              <div class="checks">
+                <label class="check">
+                  <input type="checkbox" id="optOkxSwap" checked />
+                  <span>SWAP Orders</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="optOkxSpot" />
+                  <span>SPOT Orders</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="optOkxMargin" />
+                  <span>Margin Orders</span>
+                </label>
+              </div>
+            </div>
+
+            <div id="gateOptions" style="display: none">
+              <div class="checks">
+                <label class="check">
+                  <input type="checkbox" id="optGateSpot" checked />
+                  <span>Spot Open Orders</span>
+                </label>
+                <label class="check">
+                  <input type="checkbox" id="optGateFutures" checked />
+                  <span>Futures Open Orders</span>
+                </label>
+              </div>
+              <div class="field">
+                <label for="gateSpotAccount">Gate Spot Account</label>
+                <input id="gateSpotAccount" placeholder="unified" value="unified" />
+              </div>
+              <div class="field">
+                <label for="gateSettle">Gate Futures Settle</label>
+                <input id="gateSettle" placeholder="usdt" value="usdt" />
+              </div>
+            </div>
+
+            <button class="btn btn--ghost" id="refreshBtn" type="button">Refresh</button>
           </div>
         </div>
       </section>
@@ -115,8 +179,8 @@
               <span>Select all</span>
             </label>
             <div class="toolbar__actions">
-              <button class="btn btn--danger" id="cancelSelectedBtn">Cancel selected</button>
-              <button class="btn btn--ghost" id="refreshBtn2">Refresh</button>
+              <button class="btn btn--danger" id="cancelSelectedBtn" type="button">Cancel selected</button>
+              <button class="btn btn--ghost" id="refreshBtn2" type="button">Refresh</button>
             </div>
             <div class="toolbar__meta" id="selectionMeta">0 selected</div>
           </div>

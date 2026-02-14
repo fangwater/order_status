@@ -13,8 +13,9 @@ META_SALT_KEY = "kdf_salt"
 
 def db_path() -> Path:
     base_dir = Path(__file__).resolve().parents[1]
-    default_path = base_dir / "data" / "order_status.db"
-    return Path(os.environ.get("ORDER_STATUS_DB_PATH", str(default_path)))
+    default_path = base_dir / "data" / "account_manager.db"
+    env_path = os.environ.get("ACCOUNT_MANAGER_DB_PATH") or os.environ.get("ORDER_STATUS_DB_PATH")
+    return Path(env_path or str(default_path))
 
 
 def get_conn() -> sqlite3.Connection:
@@ -45,12 +46,14 @@ def init_db(conn: sqlite3.Connection) -> None:
                 label TEXT NOT NULL,
                 api_key_enc TEXT NOT NULL,
                 api_secret_enc TEXT NOT NULL,
+                api_passphrase_enc TEXT,
                 created_at TEXT NOT NULL,
                 updated_at TEXT NOT NULL,
                 UNIQUE(exchange, label)
             )
             """
         )
+    _ensure_credentials_columns(conn)
     conn.commit()
 
 
@@ -78,6 +81,15 @@ def _needs_credentials_migration(conn: sqlite3.Connection) -> bool:
     return False
 
 
+def _ensure_credentials_columns(conn: sqlite3.Connection) -> None:
+    if not _table_exists(conn, "credentials"):
+        return
+    columns = conn.execute("PRAGMA table_info('credentials')").fetchall()
+    col_names = {col["name"] for col in columns}
+    if "api_passphrase_enc" not in col_names:
+        conn.execute("ALTER TABLE credentials ADD COLUMN api_passphrase_enc TEXT")
+
+
 def _migrate_credentials(conn: sqlite3.Connection) -> None:
     conn.execute("ALTER TABLE credentials RENAME TO credentials_old")
     conn.execute(
@@ -88,6 +100,7 @@ def _migrate_credentials(conn: sqlite3.Connection) -> None:
             label TEXT NOT NULL,
             api_key_enc TEXT NOT NULL,
             api_secret_enc TEXT NOT NULL,
+            api_passphrase_enc TEXT,
             created_at TEXT NOT NULL,
             updated_at TEXT NOT NULL,
             UNIQUE(exchange, label)
@@ -102,6 +115,7 @@ def _migrate_credentials(conn: sqlite3.Connection) -> None:
             label,
             api_key_enc,
             api_secret_enc,
+            api_passphrase_enc,
             created_at,
             updated_at
         )
@@ -114,6 +128,7 @@ def _migrate_credentials(conn: sqlite3.Connection) -> None:
             END AS label,
             api_key_enc,
             api_secret_enc,
+            NULL,
             created_at,
             updated_at
         FROM credentials_old
@@ -165,6 +180,7 @@ def upsert_credentials(
     label: str,
     api_key_enc: str,
     api_secret_enc: str,
+    api_passphrase_enc: str | None,
 ) -> None:
     now = utc_now()
     existing = conn.execute(
@@ -175,18 +191,30 @@ def upsert_credentials(
         conn.execute(
             """
             UPDATE credentials
-            SET label = ?, api_key_enc = ?, api_secret_enc = ?, updated_at = ?
+            SET label = ?,
+                api_key_enc = ?,
+                api_secret_enc = ?,
+                api_passphrase_enc = ?,
+                updated_at = ?
             WHERE exchange = ? AND label = ?
             """,
-            (label, api_key_enc, api_secret_enc, now, exchange, label),
+            (label, api_key_enc, api_secret_enc, api_passphrase_enc, now, exchange, label),
         )
     else:
         conn.execute(
             """
-            INSERT INTO credentials (exchange, label, api_key_enc, api_secret_enc, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
+            INSERT INTO credentials (
+                exchange,
+                label,
+                api_key_enc,
+                api_secret_enc,
+                api_passphrase_enc,
+                created_at,
+                updated_at
+            )
+            VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
-            (exchange, label, api_key_enc, api_secret_enc, now, now),
+            (exchange, label, api_key_enc, api_secret_enc, api_passphrase_enc, now, now),
         )
     conn.commit()
 

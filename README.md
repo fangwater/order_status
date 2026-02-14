@@ -1,11 +1,10 @@
-# order_status
+# account_manager
 
-本项目提供一个本地的订单查询/撤单小工具：
-- 支持 Binance 统一账户（PAPI）的 U 本位合约与现货挂单查询
-- 支持 Binance 普通 U 本位合约挂单查询
-- 卡片式前端展示、多选/全选、批量撤单、撤单结果动画反馈
-
-> OKEX 暂不实现（界面里保留入口但不可用）。
+本项目提供一个本地的多交易所订单管理工具：
+- Binance：统一账户（PAPI）UM / Spot(Margin)、普通 UM(FAPI)、普通 Spot(API v3)
+- OKX：SWAP / SPOT / Margin 挂单查询、撤单、单号查询
+- Gate：Spot / Futures 挂单查询、撤单、单号查询
+- 卡片式前端展示、多选/全选、批量撤单
 
 ## 运行
 
@@ -17,7 +16,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-2) 生成主密钥（用于加密保存 API Key/Secret）：
+2) 生成主密钥（用于加密保存 API Key/Secret/Passphrase）：
 
 ```bash
 python - <<'PY'
@@ -26,20 +25,36 @@ print(Fernet.generate_key().decode())
 PY
 ```
 
-```bash
 3) 启动服务：
 
 ```bash
 uvicorn app.main:app --reload --host 0.0.0.0 --port 6301
 ```
 
+或使用 pm2 脚本：
+
+```bash
+scripts/start_account_manager.sh
+```
+
 4) 打开页面并登录：
 
-```
+```text
 http://127.0.0.1:6301/
 ```
 
 在登录页输入上一步生成的主密钥（仅保存于内存，会话结束需重新登录）。
+
+## Binance 账户模式识别
+
+项目内置了模式识别脚本：
+
+```bash
+BINANCE_API_KEY=... BINANCE_API_SECRET=... \
+python scripts/check_binance_account_mode.py
+```
+
+也可以在页面 Query 面板中点击 `Detect Mode` 自动识别。
 
 ## 2FA (Google Authenticator)
 
@@ -48,13 +63,19 @@ http://127.0.0.1:6301/
 
 ## 可选环境变量
 
-- `ORDER_STATUS_DB_PATH`: SQLite 文件路径，默认 `data/order_status.db`。
-- `BINANCE_PAPI_URL`: 统一账户接口地址，默认 `https://papi.binance.com`。
-- `BINANCE_FAPI_URL`: U 本位合约接口地址，默认 `https://fapi.binance.com`。
+- `ACCOUNT_MANAGER_DB_PATH`: SQLite 文件路径（优先）。
+- `ORDER_STATUS_DB_PATH`: 兼容旧变量名。
+- `BINANCE_PAPI_URL`: 默认 `https://papi.binance.com`
+- `BINANCE_FAPI_URL`: 默认 `https://fapi.binance.com`
+- `BINANCE_SPOT_URL`: 默认 `https://api.binance.com`
+- `OKX_BASE_URL`: 默认 `https://www.okx.com`
+- `OKX_SIMULATED_TRADING`: `1` 时请求头加 `x-simulated-trading: 1`
+- `GATE_BASE_URL`: 默认 `https://api.gateio.ws`
+- `GATE_SPOT_ACCOUNT`: 默认 `unified`
+- `GATE_FUTURES_SETTLE`: 默认 `usdt`
 
 ## 说明
 
-- API Key/Secret 仅保存加密后的密文。
-- 支持多组 Binance 账号，通过 `Label` 区分；查询时选择账号。
-- 撤单会逐条请求；完成后自动刷新。
-# order_status
+- API Key/Secret/Passphrase 仅保存加密后的密文。
+- 支持多组账号，通过 `Label` 区分；查询时可按交易所筛选账号。
+- 撤单按订单逐条请求；完成后自动刷新。

@@ -13,7 +13,26 @@ function withBase(path) {
   return `${basePath}${normalized}`;
 }
 
+const SOURCE_OPTIONS = {
+  binance: [
+    { value: "papi_um", label: "PAPI UM" },
+    { value: "papi_spot", label: "PAPI Spot/Margin" },
+    { value: "fapi_um", label: "FAPI UM" },
+    { value: "spot", label: "Spot" },
+  ],
+  okx: [
+    { value: "okx_swap", label: "OKX SWAP" },
+    { value: "okx_spot", label: "OKX SPOT" },
+    { value: "okx_margin", label: "OKX Margin" },
+  ],
+  gate: [
+    { value: "gate_spot", label: "Gate Spot" },
+    { value: "gate_futures", label: "Gate Futures" },
+  ],
+};
+
 const lookupForm = document.getElementById("lookupForm");
+const exchangeSelect = document.getElementById("exchange");
 const accountSelect = document.getElementById("accountSelect");
 const sourceSelect = document.getElementById("sourceSelect");
 const symbolInput = document.getElementById("symbol");
@@ -24,6 +43,15 @@ const resultHint = document.getElementById("resultHint");
 const lookupHint = document.getElementById("lookupHint");
 const logoutBtn = document.getElementById("logoutBtn");
 const toast = document.getElementById("toast");
+
+const gateSpotAccountField = document.getElementById("gateSpotAccountField");
+const gateSettleField = document.getElementById("gateSettleField");
+const gateSpotAccountInput = document.getElementById("gateSpotAccount");
+const gateSettleInput = document.getElementById("gateSettle");
+
+const state = {
+  credentials: [],
+};
 
 function showToast(message) {
   if (!toast) {
@@ -84,16 +112,58 @@ function formatDateParts(year, month, day, hour, minute, second) {
 }
 
 function sourceLabel(source) {
-  switch (source) {
-    case "papi_um":
-      return "PAPI UM";
-    case "papi_spot":
-      return "PAPI Margin";
-    case "fapi_um":
-      return "FAPI UM";
-    default:
-      return source;
+  for (const options of Object.values(SOURCE_OPTIONS)) {
+    const found = options.find((item) => item.value === source);
+    if (found) {
+      return found.label;
+    }
   }
+  return source;
+}
+
+function refreshAccounts() {
+  const selectedExchange = exchangeSelect.value;
+  const current = accountSelect.value;
+  const accounts = state.credentials
+    .filter((item) => item.exchange === selectedExchange)
+    .map((item) => item.label);
+
+  accountSelect.innerHTML = "";
+  accounts.forEach((label) => {
+    const option = document.createElement("option");
+    option.value = label;
+    option.textContent = label;
+    accountSelect.appendChild(option);
+  });
+
+  if (!accounts.length) {
+    const option = document.createElement("option");
+    option.value = "";
+    option.textContent = "No account";
+    accountSelect.appendChild(option);
+    return;
+  }
+
+  if (current && accounts.includes(current)) {
+    accountSelect.value = current;
+  }
+}
+
+function refreshSources() {
+  const selectedExchange = exchangeSelect.value;
+  const options = SOURCE_OPTIONS[selectedExchange] || [];
+
+  sourceSelect.innerHTML = "";
+  options.forEach((item) => {
+    const option = document.createElement("option");
+    option.value = item.value;
+    option.textContent = item.label;
+    sourceSelect.appendChild(option);
+  });
+
+  const showGate = selectedExchange === "gate";
+  gateSpotAccountField.style.display = showGate ? "block" : "none";
+  gateSettleField.style.display = showGate ? "block" : "none";
 }
 
 async function ensureLoggedIn() {
@@ -121,27 +191,15 @@ async function fetchCredentials() {
     return;
   }
   const data = await resp.json();
+  state.credentials = data;
+
   if (!data.length) {
-    accountSelect.innerHTML = "<option value=\"\">No account</option>";
+    accountSelect.innerHTML = '<option value="">No account</option>';
     lookupHint.textContent = "No credentials saved yet.";
     return;
   }
-  const accounts = data
-    .filter((item) => item.exchange === "binance")
-    .map((item) => item.label);
-  accountSelect.innerHTML = "";
-  accounts.forEach((label) => {
-    const option = document.createElement("option");
-    option.value = label;
-    option.textContent = label;
-    accountSelect.appendChild(option);
-  });
-  if (!accounts.length) {
-    const option = document.createElement("option");
-    option.value = "";
-    option.textContent = "No account";
-    accountSelect.appendChild(option);
-  }
+
+  refreshAccounts();
 }
 
 function renderOrders(orders) {
@@ -157,7 +215,7 @@ function renderOrders(orders) {
     card.innerHTML = `
       <div class="order-card__head">
         <div class="order-card__symbol">${formatValue(order.symbol)}</div>
-        <div class="order-card__chip">${sourceLabel(order.source)}</div>
+        <div class="order-card__chip">${formatValue(order.exchange)} / ${sourceLabel(order.source)}</div>
       </div>
       <div class="order-card__meta">
         <div>Side <span>${formatValue(order.side)}</span></div>
@@ -180,19 +238,27 @@ function renderOrders(orders) {
 
 async function lookupOrder(event) {
   event.preventDefault();
+  const exchange = exchangeSelect.value;
   const account = accountSelect.value;
   if (!account) {
     showToast("Select an account first");
     return;
   }
+
   const symbol = symbolInput.value.trim().toUpperCase();
   if (!symbol) {
     showToast("Symbol is required");
     return;
   }
+
   const orderId = orderIdInput.value.trim();
   const clientOrderId = clientOrderIdInput.value.trim();
-  if (!orderId && !clientOrderId) {
+  if (exchange === "gate") {
+    if (!orderId) {
+      showToast("Gate lookup requires order ID");
+      return;
+    }
+  } else if (!orderId && !clientOrderId) {
     showToast("Provide order ID or client order ID");
     return;
   }
@@ -200,13 +266,18 @@ async function lookupOrder(event) {
   resultHint.textContent = "Loading...";
 
   const payload = {
-    exchange: document.getElementById("exchange").value,
+    exchange,
     account,
     source: sourceSelect.value,
     symbol,
     order_id: orderId || null,
     client_order_id: clientOrderId || null,
   };
+
+  if (exchange === "gate") {
+    payload.gate_spot_account = (gateSpotAccountInput.value || "unified").trim() || "unified";
+    payload.gate_settle = (gateSettleInput.value || "usdt").trim() || "usdt";
+  }
 
   const resp = await fetch(withBase("/api/orders/lookup"), {
     method: "POST",
@@ -232,12 +303,18 @@ async function lookupOrder(event) {
   }
 }
 
+exchangeSelect.addEventListener("change", () => {
+  refreshSources();
+  refreshAccounts();
+});
+
 async function init() {
   const ok = await ensureLoggedIn();
   if (!ok) {
     return;
   }
-  fetchCredentials();
+  refreshSources();
+  await fetchCredentials();
 }
 
 lookupForm.addEventListener("submit", lookupOrder);
